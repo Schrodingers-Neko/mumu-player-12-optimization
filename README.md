@@ -1,114 +1,125 @@
-# MuMu Player 12 (Android 15) Technical Audit & Debloating Guide
+# MuMu 模拟器 12 (Android 15) 深度优化、去广告与官方 Lawnchair 15 替换指南
 
-## Overview
+[简体中文](README.md) | [English](README_EN.md)
 
-This repository documents the architectural analysis, bloatware and adware catalog, network telemetry behaviors, and debloating procedures for **MuMu Player 12** running the **Android 15** engine.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/平台-Windows%20%7C%20Android%2015-success.svg)](README.md)
+[![MuMu Player](https://img.shields.io/badge/MuMu%20模拟器-12%20(Android%2015)-orange.svg)](https://mumu.163.com/)
+[![Launcher](https://img.shields.io/badge/桌面-官方%20Lawnchair%2015-brightgreen.svg)](https://github.com/LawnchairLauncher/lawnchair)
+[![Root](https://img.shields.io/badge/Root-KernelSU-red.svg)](https://github.com/tiann/KernelSU)
+[![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B%20%7C%207%2B-blue.svg)](README.md)
+
+## 项目概述
+
+本项目深入剖析网易 **MuMu 模拟器 12** 的 **Android 15** 引擎底层架构，系统性记录了预装臃肿软件、后台广告组件、宿主机扫描与网络遥测行为，并提供了一整套全自动化的去广告、千兆网桥调优及官方 **Lawnchair 15** 桌面替换方案。
+
+彻底解决替换桌面后开机卡在“正在启动手机...”的冷启动死循环问题。
 
 ---
 
-## 1. Environment & Architecture
+## 1. 运行环境与系统架构
 
-| Parameter | Value | Details |
+| 参数项 | 参数值 | 说明 |
 | :--- | :--- | :--- |
-| **MuMu Core Version** | `6.8.1.0` (MuMu 6.0 generation) | Windows client based on Qt5 + Chromium Embedded Framework (CEF) |
-| **Android Version** | **Android 15** (`vanillaicecream`, SDK 35) | Kernel 6.1.90-perf+, 64-bit architecture |
-| **Hypervisor Engine** | VirtualBox 7.2.4 (custom NetEase build: `nemu-vbox7`) | Headless backend managed by `nemu-vboxmanager.dll` |
-| **Installation Path** | `<MUMU_DIR>` (e.g. `C:\Program Files\Netease\MuMu Player 12\`) | Android 15 device files located in `nx_device\15.0\` |
-| **VM Storage Location** | `<MUMU_DIR>\vms\MuMuPlayer-15.0-<VM_INDEX>\` | `data.vdi` (User data), `system.vdi` (Base ROM), `system-diff.vdi` |
-| **Root Capabilities** | Native KernelSU (`me.weishu.kernelsu`) & Magisk | System partition mounted read-write via overlayfs (`/mnt/scratch/upperdir`) |
+| **MuMu 内核版本** | `6.8.1.0` (MuMu 6.0 体系) | 基于 Qt5 + Chromium Embedded Framework (CEF) 构建的 Windows 客户端 |
+| **Android 版本** | **Android 15** (`vanillaicecream`, API 级别 35) | 6.1.90-perf+ 内核，x86_64 纯 64 位原生架构 |
+| **底层虚拟化引擎** | VirtualBox 7.2.4 (网易定制版: `nemu-vbox7`) | 由 `nemu-vboxmanager.dll` 管理的无头（Headless）虚拟机后端 |
+| **模拟器安装路径** | `<MUMU_DIR>`（默认为 `C:\Program Files\Netease\MuMu Player 12\`） | Android 15 相关运行时组件位于 `nx_device\15.0\` |
+| **虚拟机镜像目录** | `<MUMU_DIR>\vms\MuMuPlayer-15.0-<VM_INDEX>\` | 包含 `data.vdi` (用户数据), `system.vdi` (系统只读底包), `system-diff.vdi` |
+| **Root 方案** | 原生 KernelSU (`me.weishu.kernelsu`) & Magisk | 系统分区通过 overlayfs 挂载实现可写 (`/mnt/scratch/upperdir`) |
 
 ---
 
-## 2. MuMu CLI & ADB Connectivity
+## 2. MuMu CLI 与 ADB 连接机制
 
-MuMu Player 12 includes a command-line interface located at:
+MuMu 模拟器 12 自带功能完备的命令行工具：
 ```text
 <MUMU_DIR>\nx_main\mumu-cli.exe
-# Default path: C:\Program Files\Netease\MuMu Player 12\nx_main\mumu-cli.exe
+# 默认路径：C:\Program Files\Netease\MuMu Player 12\nx_main\mumu-cli.exe
 ```
 
-### Essential CLI Commands
+### 常用 CLI 命令
 ```powershell
-# List all instances, Android versions, running status, and allocated ADB ports
+# 列出所有虚拟机实例、安卓版本、运行状态及分配的 ADB 端口
 .\mumu-cli.exe info -v all
 
-# Launch or restart a specific VM instance (e.g. Instance 1 = Android 15)
+# 启动或重启指定虚拟机（如实例 1 = Android 15）
 .\mumu-cli.exe control -v 1 launch
 .\mumu-cli.exe control -v 1 restart
 
-# Dump all hardware, renderer, and network configurations for an instance
+# 导出指定实例的所有硬件、渲染器与网络配置
 .\mumu-cli.exe setting -v 1 -a
 
-# Install an APK from Windows into the emulator
+# 从 Windows 主机向模拟器静默安装 APK
 .\mumu-cli.exe control -v 1 app install -apk "C:\Path\To\file.apk"
 ```
 
-### Dynamic ADB Port Allocation & Network Modes (NAT vs. Bridge)
+### 动态 ADB 端口分配与网络模式 (NAT vs. 网桥)
 
-#### Mode 1: NAT Mode (Default)
-* **Port Mapping**: VirtualBox creates a user-space NAT port forwarding rule (`127.0.0.1:16416` -> VM port `5555`).
-* **Performance Impact**: Network throughput is bottlenecked (typically 30–80 Mbps) due to user-space *Slirp* software socket translations, high context switching overhead, and small fixed TCP window sizes.
-* **ADB Connection**:
+#### 模式 1：NAT 模式（默认）
+* **端口映射**：VirtualBox 在用户态创建本地端口转发规则（`127.0.0.1:16416` -> 虚拟机 `5555` 端口）。
+* **性能瓶颈**：由于依赖用户态 *Slirp* 软件套接字转发，存在极高的 CPU 上下文切换开销与较小的固定 TCP 窗口，网络吞吐量通常被限制在 **30–80 Mbps**。
+* **ADB 连接命令**：
   ```powershell
   & "<MUMU_DIR>\nx_device\15.0\shell\adb.exe" connect 127.0.0.1:16416
   ```
 
-#### Mode 2: Network Bridge Mode (High Speed 1 Gbps)
-* **Mechanism**: VirtualBox binds directly to a physical host network adapter at Layer 2 (Data Link layer) using the NDIS filter driver (`nemu_net_bridge`).
-* **Configured Interface**: Primary physical network adapter (e.g., Gigabit Ethernet or Wi-Fi).
-* **DHCP & IP Assignment**:
-  * The VM behaves as a physical device on your local LAN, negotiating an independent IP directly with your router via DHCP.
-  * **Current Lease**: Dynamic IP assigned by your router (e.g. `192.168.1.x` / `10.0.0.x`).
-  * **VM MAC Address**: Unique hardware MAC generated per VM instance (stored in `<MUMU_DIR>\vms\MuMuPlayer-15.0-<VM_INDEX>\macaddress`).
-* **Throughput & Latency**: Eliminates all user-space NAT socket copying, enabling full unthrottled line-rate gigabit speeds (up to 1,000 Mbps) with low latency.
-* **ADB Connection in Bridged Mode**:
+#### 模式 2：网桥直连模式（推荐：跑满千兆 1 Gbps）
+* **实现原理**：通过网易定制的 NDIS 过滤驱动（`nemu_net_bridge`），使虚拟机直接绑定到宿主机的物理网卡（二层数据链路层）。
+* **网络接口**：物理宿主机网卡（如 Gigabit Ethernet 或 Wi-Fi）。
+* **DHCP 与独立 IP**：
+  * 虚拟机作为局域网内的独立物理设备存在，直接向家庭路由器申请独立内网 IP。
+  * **内网租约**：由路由器动态分配（如 `192.168.1.x` / `10.0.0.x`）。
+  * **MAC 地址**：每个实例生成固定硬件 MAC（记录在 `<MUMU_DIR>\vms\MuMuPlayer-15.0-<VM_INDEX>\macaddress` 中）。
+* **吞吐与延迟**：彻底消除用户态 NAT 内存拷贝，跑满内网千兆（高达 1,000 Mbps），外网延迟低至 ~3.7 ms。
+* **网桥模式下的 ADB 连接**：
   ```powershell
   & "<MUMU_DIR>\nx_device\15.0\shell\adb.exe" connect <VM_LAN_IP>:5555
   & "<MUMU_DIR>\nx_device\15.0\shell\adb.exe" -s <VM_LAN_IP>:5555 root
   ```
-  *(Note: In Bridged mode, VirtualBox disables NAT port `127.0.0.1:16416`. Always connect directly to the VM's LAN IP).*
+  *(注：开启网桥模式后，VirtualBox 会停用 `127.0.0.1:16416` 的 NAT 映射，请始终直连虚拟机的内网 IP)。*
 
-#### Automated Dynamic Resolution in `mumu_debloater.ps1`
-The PowerShell script automatically handles both modes:
-1. Reads `customer_config.json` to check if `network_bridge_opened` is enabled.
-2. Extracts the VM's hardware MAC address from `vms\MuMuPlayer-15.0-1\macaddress`.
-3. Resolves the active IP from Windows's ARP/neighbor cache (`Get-NetNeighbor`).
-4. If bridge mode is off or unresolved, it gracefully falls back to NAT `127.0.0.1:$adb_port`.
+#### 本仓库脚本中的动态自动探测
+仓库中的 PowerShell 自动化脚本已集成双模式自适应逻辑：
+1. 自动解析 `customer_config.json` 检查 `network_bridge_opened` 是否开启。
+2. 自动读取 `vms\MuMuPlayer-15.0-<VM_INDEX>\macaddress` 提取目标 MAC 地址。
+3. 并行扫描本地局域网并查询 Windows ARP 邻居表（`Get-NetNeighbor`）自动获取虚拟机实时 IP。
+4. 若未开启网桥，则无缝回退至 NAT 本地端口 `127.0.0.1:$adb_port`。
 
 ---
 
-## 3. Bloatware, Adware & Telemetry Catalog
+## 3. 预装应用、遥测与广告行为审计目录
 
-### Inside Android 15
+### Android 15 系统内部组件
 
-| Package Name | Type | Behavior & Threat Analysis | Action |
+| 软件包名 | 软件类型 | 行为分析与系统影响 | 处理策略 |
 | :--- | :--- | :--- | :--- |
-| `advertising.id.ccpa.gdpr` | Utility | Easy Advertising ID app (kept per user preference). | **Preserved** |
-| `com.netease.mumu.cloner` | Utility | MuMu multi-account app cloner (kept per user preference). | **Preserved** |
-| `com.mumu.store` | Store / Adware | MuMu App Store. Pushes promotional apps, opens persistent connections to NetEase ad networks (`23.58.184.62`, `123.58.183.1`), and holds wake locks. | **Disabled** (`pm disable-user --user 0`) |
-| `com.mumu.shared.sdk` | Ad Tracking SDK | NetEase SensorsData analytics framework. Holds high privileged permissions. | **Disabled** (`pm disable-user --user 0`) |
-| `com.mumu.acc` | Telemetry / VPN | "MuMu Accelerator" service. Maintained continuous active connections to NetEase telemetry servers (`42.186.25.83:443`, `123.6.124.14:443`). | **Disabled** (`pm disable-user --user 0`) |
-| `com.nemu.oaidmanager` | Tracking | Open Anonymous Device Identifier framework used in Chinese Android ecosystems for ad targeting and profiling. | **Disabled** (`pm disable-user --user 0`) |
-| `com.nemu.nlp` | Telemetry | Nemu Network Location Provider tracking service. | **Disabled** (`pm disable-user --user 0`) |
-| `com.nemu.googleinstaller` | Leftover | Installer used to set up Google Play services initially. | **Uninstalled** (`pm uninstall`) |
-| `com.sohu.inputmethod.sogou.chuizi` | Adware IME | Sogou Smartisan keyboard bundled in `/system/priv-app`. Sends search telemetry and suggestion queries to Sogou/Tencent servers. | **Disabled** (Replaced with HeliBoard) |
-| `com.android.chromium` | Redundant | Duplicate AOSP browser shell (redundant with Chrome/Edge). | **Disabled** (`pm disable-user --user 0`) |
-| `com.android.camera2` | Redundant | Stock AOSP camera application (unnecessary in emulator). | **Disabled** (`pm disable-user --user 0`) |
+| `advertising.id.ccpa.gdpr` | 系统工具 | 广告 ID 查询工具 | **保留** |
+| `com.netease.mumu.cloner` | 系统工具 | MuMu 多开应用分身助手 | **保留** |
+| `com.mumu.store` | 应用商店 / 广告 | MuMu 应用中心。后台推送推广应用、保持长连接并频繁请求推广接口 (`api.mumu.netease.com`) | **停用** (`pm disable-user --user 0`) |
+| `com.mumu.shared.sdk` | 埋点 SDK | 网易神策 (SensorsData) 行为分析统计框架，拥有高系统权限 | **停用** (`pm disable-user --user 0`) |
+| `com.mumu.acc` | 遥测 / VPN | “MuMu 加速器”后台服务，持续向网易服务器发送数据包 | **停用** (`pm disable-user --user 0`) |
+| `com.nemu.oaidmanager` | 跟踪框架 | 中国移动安全联盟 OAID 设备唯一标识服务，用于跨应用广告追踪 | **停用** (`pm disable-user --user 0`) |
+| `com.nemu.nlp` | 遥测 | Nemu 网络位置提供器定位服务 | **停用** (`pm disable-user --user 0`) |
+| `com.nemu.googleinstaller` | 安装残留 | 谷歌服务框架初始安装引导器 | **卸载** (`pm uninstall`) |
+| `com.sohu.inputmethod.sogou.chuizi` | 预装输入法 | 锤子定制版搜狗输入法，内置联网词库推荐与联想词数据回传 | **停用** (替换为 HeliBoard) |
+| `com.android.chromium` | 冗余组件 | AOSP 基础内置浏览器壳 | **停用** (`pm disable-user --user 0`) |
+| `com.android.camera2` | 冗余组件 | AOSP 原生相机应用 | **停用** (`pm disable-user --user 0`) |
 
-### On Windows Host
+### Windows 宿主机驻留行为
 
-1. **Host Process Scanner (`report_app_data_config.json`)**:
-   * Located at `%APPDATA%\Netease\MuMuPlayer\configs\report_app_data_config.json`.
-   * MuMu monitors and logs running processes on the host Windows machine (including TeamViewer, AnyDesk, Tailscale, ZeroTier, competitive emulators, and gaming utilities) and transmits the list to NetEase.
-   * *Mitigation*: Replaced with `{}` and set to Windows **Read-Only**.
-2. **Promotional Banner Cache (`ProgramAds`)**:
-   * Located at `%APPDATA%\Netease\MuMuPlayer\data\ProgramAds\`.
-   * Automatically downloads graphical promo banners (`image_*.png`) from NetEase CDNs.
-   * *Mitigation*: Deleted cached images, emptied `programAds.json`, and set to Windows **Read-Only**.
-3. **Background Service (`MuMuRemoteService`)**:
-   * Windows Service running `"<MUMU_DIR>\nx_main\MuMuRemoteService.exe" --service`.
-   * Background server for "GameViewer" remote access. Runs constantly even when the emulator is closed.
-   * *Mitigation*: Stop and disable in an Administrator PowerShell prompt if remote play is not used:
+1. **宿主机运行进程扫描器 (`report_app_data_config.json`)**：
+   * 路径：`%APPDATA%\Netease\MuMuPlayer\configs\report_app_data_config.json`。
+   * MuMu 客户端会监控并记录宿主机上运行的软件列表（包括 TeamViewer、AnyDesk、Tailscale、ZeroTier、同类竞品模拟器以及游戏插件等）并上报。
+   * *处置方案*：清空并替换为 `{}`，并设置 Windows **只读属性**。
+2. **横幅广告图片缓存 (`ProgramAds`)**：
+   * 路径：`%APPDATA%\Netease\MuMuPlayer\data\ProgramAds\`。
+   * 客户端每次启动时自动从网易 CDN 拉取游戏营销图片（`image_*.png`）。
+   * *处置方案*：删除缓存图片，清空 `programAds.json`，并设置 Windows **只读属性**。
+3. **后台远程服务 (`MuMuRemoteService`)**：
+   * Windows 系统服务，运行 `"<MUMU_DIR>\nx_main\MuMuRemoteService.exe" --service`。
+   * 为“GameViewer 远程串流”提供后台服务端支持，模拟器完全关闭后仍默认常驻。
+   * *处置方案*：若无需远程串流，可在管理员 PowerShell 中彻底禁用：
      ```powershell
      Stop-Service -Name "MuMuRemoteService" -Force
      Set-Service -Name "MuMuRemoteService" -StartupType Disabled
@@ -116,43 +127,42 @@ The PowerShell script automatically handles both modes:
 
 ---
 
-## 4. The High-Speed ADB APK Installation Pipeline
+## 4. 极速 ADB 安装流水线
 
-Because all NetEase adware (`com.mumu.store`, `com.mumu.shared.sdk`) is disabled, APKs are installed cleanly via ADB:
+在停用 `com.mumu.store` 之后，APK 可以完全通过 ADB 原生管道高速安装：
 
-### How ADB Installation Operates
-* Direct `adb install -r -d -g <file.apk>` connects directly to `adbd` (running as root) inside the Android kernel layer. `adbd` invokes Android's native AOSP `PackageManagerService` directly.
-* Completely independent of MuMu's proprietary apps. **Works 100% of the time, zero bloatware or background store required.**
-* Leverages the 1 Gbps Bridged Network interface, streaming multi-gigabyte APKs/OBBs in seconds.
+### ADB 安装的底层优势
+* `adb install -r -d -g <file.apk>` 直连 Android 内核的 `adbd`（Root 权限运行），直接驱动 AOSP 原生 `PackageManagerService`。
+* 彻底摆脱模拟器应用商店的干扰与弹窗拦截，100% 成功率。
+* 配合千兆网桥直连，大型游戏安装包（数 GB）秒级传输。
 
-### Quick Ways to Install APKs from Windows
+### 便捷安装方式
 
-1. **Right-Click Context Menu ("Install in MuMu Player (ADB)")**:
-   * Right-click any `.apk` file anywhere in Windows Explorer and select **Install in MuMu Player (ADB)**.
-   * Registered in `HKCU` via [`register_context_menu.reg`](register_context_menu.reg).
-2. **Drag-and-Drop onto Batch Script**:
-   * Drag any `.apk` file and drop it directly onto [`install_apk.bat`](install_apk.bat) (or a desktop shortcut to it).
-3. **Interactive File Browser**:
-   * Simply double-click [`install_apk.bat`](install_apk.bat). If no argument is provided, a Windows file picker opens automatically.
-4. **Command Line / PowerShell**:
+1. **Windows 右键菜单一键安装**：
+   * 在 Windows 资源管理器中右键任意 `.apk` 文件，点击 **“Install in MuMu Player (ADB)”**。
+   * 双击导入 [`register_context_menu.reg`](register_context_menu.reg) 即可注册（写入 `HKCU`，无需管理员权限）。
+2. **拖拽到脚本一键安装**：
+   * 将任意 `.apk` 文件拖拽放到 [`install_apk.bat`](install_apk.bat) 上即可静默安装。
+3. **图形化文件选择器**：
+   * 直接双击运行 [`install_apk.bat`](install_apk.bat)，若未附带参数会自动弹出 Windows 文件浏览窗口供选择。
+4. **命令行 / PowerShell 批处理**：
    ```powershell
    .\install_apk.ps1 "C:\Path\To\app.apk"
    ```
 
-
 ---
 
-## 5. Keyboard Replacement: HeliBoard
+## 5. 输入法替换方案：HeliBoard
 
-Because Sogou IME was the only pre-installed keyboard, disabling it without a replacement would leave the Android system with no virtual input method.
+由于搜狗输入法是唯一的内置输入法，若直接停用会导致系统缺失虚拟键盘输入法而无法打字。
 
-* **Installed**: [HeliBoard](https://github.com/HeliBorg/HeliBoard) (`helium314.keyboard`), an open-source, offline privacy-focused AOSP keyboard fork with zero network permissions.
-* **Configuration**:
+* **推荐替换**：[HeliBoard](https://github.com/HeliBorg/HeliBoard) (`helium314.keyboard`)，一款完全开源、Material You 风格、彻底离线且无网络权限的隐私级输入法。
+* **激活与切换命令**：
   ```bash
   adb shell ime enable helium314.keyboard/.latin.LatinIME
   adb shell ime set helium314.keyboard/.latin.LatinIME
   ```
-* **Disable Sogou IME**:
+* **停用原装搜狗输入法**：
   ```bash
   adb shell am force-stop com.sohu.inputmethod.sogou.chuizi
   adb shell pm disable-user --user 0 com.sohu.inputmethod.sogou.chuizi
@@ -160,9 +170,9 @@ Because Sogou IME was the only pre-installed keyboard, disabling it without a re
 
 ---
 
-## 6. DNS / Hosts Telemetry Blacklist
+## 6. DNS / Hosts 域名级黑名单
 
-The following entries are written to `/system/etc/hosts` to null-route (`0.0.0.0`) all known NetEase and MuMu tracking servers:
+将以下规则写入 Android 系统的 `/system/etc/hosts`，实现对所有网易广告与遥测域名的空路由屏蔽（`0.0.0.0`）：
 
 ```text
 127.0.0.1       localhost
@@ -192,59 +202,79 @@ The following entries are written to `/system/etc/hosts` to null-route (`0.0.0.0
 
 ---
 
-## 7. Home Screen Launcher Architecture & "Search games & apps" Bar
+## 7. 桌面架构与官方 Lawnchair 15 替换方案
 
-### What is the Home Screen?
-* **Base Package**: **Lawnchair 15** (v15.0.0.6, package `app.lawnchair`, installed in `/system/priv-app/Lawnchair/Lawnchair.apk`).
-* **Source Base**: Lawnchair is a popular open-source launcher based on Google's AOSP Launcher3 (Pixel Launcher).
-* **NetEase Modifications**: NetEase took Lawnchair 15 and created a proprietary fork by injecting NetEase tracking classes (`com.mumu.core.ad.*`, `com.mumu.core.search.*`, `com.mumu.core.view.MuMuRootView`). In this custom build, NetEase embedded a hardcoded top search bar layout (`res/layout/mumu_search_bar_view.xml`, View ID `app:id/mumu_search_bar`).
+### 原装桌面分析
+* **基础包**：**Lawnchair 15** (v15.0.0.6, 包名 `app.lawnchair`, 安装在 `/system/priv-app/Lawnchair/Lawnchair.apk`)。
+* **上游来源**：Lawnchair 是基于谷歌 AOSP Launcher3 (Pixel 启动器) 的知名开源桌面。
+* **网易定制修改**：网易在原版基础上反编译注入了自家的广告模块 (`com.mumu.core.ad.*`, `com.mumu.core.search.*`)，并在主布局顶部硬编码了不可移除的搜索栏 (`res/layout/mumu_search_bar_view.xml`, View ID: `app:id/mumu_search_bar`)。
+* **为什么顶部搜索栏会失效假死**：
+  搜索栏点击后会向 `com.mumu.store` 发送搜索 Intent。在停用应用商店后，点击搜索栏无任何响应，成为桌面上挥之不去的牛皮癣。
 
-### What is the "Search games & apps" Bar?
-* **Original Functionality**:
-  * Connected directly to the **MuMu App Store (`com.mumu.store`)**.
-  * Periodically pulled sponsored game advertisements, trending titles, and animated banners from NetEase ad networks (`api.mumu.netease.com`) into `app:id/searchAdListView`.
-  * Tapping the bar launched `com.mumu.store` with pre-filled search intents (`mumu://store/search/`) to download sponsored games.
-* **Why it is Blank & Unresponsive Now**:
-  * With `com.mumu.store` disabled and NetEase ad domains blocked in `/system/etc/hosts`, the dynamic ad stream cannot load.
-  * The search bar reverts to its hardcoded fallback string: `mumu_search_hint_text_oversea` = **"Search games & apps"**.
-  * Tapping it tries to launch an intent targeted at `com.mumu.store`, which Android silently ignores because the package is disabled.
+### 冷启动卡死在“正在启动手机...”的成因与修复
 
-### Upstream Replacement Executed
-* **Active Version**: **Official Lawnchair 15 Beta 3** (`v15.0.0-beta3.0`, Version Code `1500020300`).
-* **Cryptographic Signing**: Resigned with the standard **AOSP Platform Key** (`SHA256: C8:A2:E9:BC:CF...`, matching MuMu's system ROM testkey). This grants Lawnchair authentic system privilege (`FLAG_SYSTEM | FLAG_PRIVILEGED`), enabling Quickstep to read internal settings keys (`swipe_bottom_to_notification_enabled`) without Android 15 `SecurityException` crashes.
-* **KernelSU Early Bind-Mount**: Deployed via `/data/adb/post-fs-data.d/00_lawnchair.sh` at PID 1 early boot before `PackageManagerService` starts. This prevents overlayfs scratch corruption on `sda8`, avoids kernel `EPERM` errors on vold unmount, and keeps the factory squashfs base ROM untouched.
-* **Result**:
-  - The proprietary `app:id/mumu_search_bar` and all NetEase ad tracking libraries are **100% eliminated**.
-  - All user apps remain preserved in the App Drawer in alphabetical order.
-  - The home screen now features the clean, upstream Material 3 Pixel-style launcher layout.
-  - Full official settings menu (Home settings, themes, icon packs, dock settings) is active and functional.
+若直接将官方发布的 `Lawnchair 15 Beta 3` APK 覆盖进 `/system/priv-app/`，冷启动时系统会发生死循环并报 `"Lawnchair keeps stopping"`。
+
+经过底层逆向诊断，真正原因包含两个独立层面：
+
+1. **系统权限与签名校验机制**：
+   * Lawnchair 15 的 Quickstep 多任务手势组件在初始化时，必须读取 `@hide` 隐藏系统设置（`swipe_bottom_to_notification_enabled`）并持有 `MANAGE_ACTIVITY_TASKS` 权限。
+   * Android 15 强制要求此类 API 必须具备 **平台系统签名 (Platform Signature)**。
+   * MuMu 的系统镜像采用了公开的标准 **AOSP Platform Test Key**。官方 GitHub 下载的 APK 采用开发者私钥签名，导致系统抛出 `SecurityException` 崩溃。
+   * **解决方案**：使用 AOSP 平台测试证书对官方 Lawnchair 15 进行**二次重签名**。
+2. **底层 Overlayfs 索引节点损坏与 Vold 卸载机制**：
+   * MuMu 的系统分区采用 overlayfs 机制（可写层位于 `sda8` 的 `/mnt/scratch/upperdir/`）。
+   * 直接向 `/system/priv-app/` 写入文件或使用 `rm -rf .../oat` 删除目录，会在底层产生 whiteout 白化设备节点 (`c 0 0`) 并打上 `trusted.overlay.impure="y"` 扩展属性。
+   * Android 开机早期，`vold` 守护进程会卸载 `/mnt/scratch`。此时非 root 进程（`system_server`, `uid=1000`）在 `stat()` 查询 `/system/priv-app/Lawnchair` 时会触发内核级 `EPERM`（无权限），导致 `PackageManagerService` 忽略该桌面并无限回退到系统的 `FallbackHome`。
+   * **解决方案**：采用 **KernelSU `post-fs-data.d` 早期挂载** (`mount -o bind`)。在 PID 1 初始化阶段、PMS 扫描之前完成无损注入，完全不污染 `sda8` scratch 分区，冷启动 100% 稳定秒开。
+
+### 自动化替换步骤
+
+运行仓库内的一键替换脚本即可自动完成全套适配：
+```powershell
+.\replace_lawnchair.ps1 -VmIndex 1
+```
+
+**替换后的效果**：
+- 顶部的网易广告搜索栏及后台追踪 SDK **100% 彻底清除**。
+- 应用抽屉中的用户所有应用完整保留，按字母智能排序。
+- 获得原生纯净的 Material 3 Pixel 风格桌面与全功能桌面设置（图标包、手势、底栏配置等）。
+- 冷启动时间缩短至 **~6 秒**，无任何卡顿与闪退。
 
 ---
 
-## 8. Open-Source Utility Suite (FOSS)
+## 8. 开源工具推荐 (FOSS)
 
-The following vetted open-source utilities are recommended to replace bare-bones or proprietary system components:
+推荐搭配以下经过兼容性验证的优质开源工具，打造纯净的 Android 15 工作环境：
 
-| Application | Package | Version | Source / Download | Purpose & Key Features |
+| 应用名称 | 软件包名 | 推荐版本 | 源码与下载地址 | 核心特性说明 |
 | :--- | :--- | :--- | :--- | :--- |
-| **Material Files** | `me.zhanghai.android.files` | `v1.7.5` | [GitHub Releases](https://github.com/zhanghai/MaterialFiles/releases) | Desktop-grade **Dual-Pane File Manager**, KernelSU root explorer, built-in archive extraction (`.zip`, `.7z`), SMB Windows shares. |
-| **Image 2 Wallpaper** | `com.shirobakama.wallpaper` | `v2.1.3` | [Google Play / F-Droid](https://github.com/shirobakama/Image2Wallpaper) | Wallpaper utility allowing 1:1 pixel scaling, fit to screen, no scrolling, stretch, rotate, and aspect-ratio alignment without forced cropping. |
-| **Droid-ify** | `com.looker.droidify` | `v0.7.8` | [GitHub Releases](https://github.com/Droid-ify/client/releases) | Material You client for F-Droid open-source repository; automatic updates for FOSS utilities. |
-| **Termux** | `com.termux` | `v0.118.3` (x86_64) | [GitHub Releases](https://github.com/termux/termux-app/releases) | Full native x86_64 Linux terminal environment and `pkg` package manager (`python`, `git`, `curl`, etc.). |
-| **VLC for Android** | `org.videolan.vlc` | `v3.7.1` (x86_64) | [VideoLAN / F-Droid](https://get.videolan.org/vlc-android/) | Native x86_64 hardware-accelerated media player supporting all audio/video formats and network streams. |
+| **Material Files** | `me.zhanghai.android.files` | `v1.7.5` | [GitHub Releases](https://github.com/zhanghai/MaterialFiles/releases) | 桌面级**双栏文件管理器**、KernelSU 原生 Root 浏览、内置解压缩 (`.zip`, `.7z`)、支持 Windows SMB 局域网共享。 |
+| **Image 2 Wallpaper** | `com.shirobakama.wallpaper` | `v2.1.3` | [Google Play / F-Droid](https://github.com/shirobakama/Image2Wallpaper) | 壁纸精准对齐工具，支持 1:1 像素缩放、适应屏幕、无滚动锁定、横向铺满，彻底解决安卓桌面强制裁剪壁纸的问题。 |
+| **Droid-ify** | `com.looker.droidify` | `v0.7.8` | [GitHub Releases](https://github.com/Droid-ify/client/releases) | 基于 Material You 设计的 F-Droid 第三方开源应用商店客户端，支持自动静默更新开源软件。 |
+| **Termux** | `com.termux` | `v0.118.3` (x86_64) | [GitHub Releases](https://github.com/termux/termux-app/releases) | 原生 x86_64 架构 Linux 终端环境与 `pkg` 包管理器（内置 `python`, `git`, `curl` 等工具）。 |
+| **VLC for Android** | `org.videolan.vlc` | `v3.7.1` (x86_64) | [VideoLAN / F-Droid](https://get.videolan.org/vlc-android/) | 原生 x86_64 硬件加速全能影音播放器，支持全格式音视频解码与局域网流媒体播放。 |
 
 ---
 
-## 9. Repository Structure
+## 9. 仓库文件结构与使用指南
 
-* [`README.md`](README.md): Architecture analysis, network bridging instructions, and technical findings.
-* [`MUMU_OPTIMIZATION_GUIDE.md`](MUMU_OPTIMIZATION_GUIDE.md): Complete step-by-step technical guide for reproducing the setup from scratch.
-* [`replace_lawnchair.ps1`](replace_lawnchair.ps1): Automated script that deploys official platform-signed Lawnchair 15 Beta 3 via KernelSU `post-fs-data.d` bind-mount.
-* [`restore_lawnchair.ps1`](restore_lawnchair.ps1): 1-click restore script that safely tears down the KernelSU hook and unmounts the launcher to restore factory NetEase Lawnchair.
-* [`mumu_debloater.ps1`](mumu_debloater.ps1): Automated script that disables NetEase tracking, promotional stores, ad engines, and host scanners.
-* [`install_apk.ps1`](install_apk.ps1): High-speed ADB installer script with file picker dialog and automatic bridge/NAT routing.
-* [`install_apk.bat`](install_apk.bat): Windows batch wrapper for dragging and dropping APKs or double-click to install.
-* [`register_context_menu.reg`](register_context_menu.reg): Adds "Install in MuMu Player (ADB)" to Windows Explorer right-click menu for `.apk` files.
-* [`unregister_context_menu.reg`](unregister_context_menu.reg): Unregisters the right-click context menu.
-* [`hosts`](hosts): Standalone blocklist file for Android's `/system/etc/hosts`.
-* [`.gitignore`](.gitignore): Excludes binary blobs (`*.apk`, `*.jar`, `*.key`), local backups, and debug logs from Git.
+* [`README.md`](README.md)：简体中文使用说明与系统架构分析文档。
+* [`README_EN.md`](README_EN.md)：English Documentation.
+* [`MUMU_OPTIMIZATION_GUIDE.md`](MUMU_OPTIMIZATION_GUIDE.md)：技术深度指南，完整记录从零重签名、底层排错到去广告的全部步骤。
+* [`replace_lawnchair.ps1`](replace_lawnchair.ps1)：全自动脚本，基于 KernelSU `post-fs-data.d` 挂载官方签名版 Lawnchair 15 Beta 3。
+* [`restore_lawnchair.ps1`](restore_lawnchair.ps1)：一键还原脚本，安全卸载 KernelSU 模块并清理缓存，无损恢复网易出厂自带桌面。
+* [`mumu_debloater.ps1`](mumu_debloater.ps1)：一键去广告脚本，停用网易内置遥测、应用中心、加速器及宿主机扫描器。
+* [`install_apk.ps1`](install_apk.ps1)：极速 ADB 应用安装脚本，支持图形化选择器与网桥智能路由。
+* [`install_apk.bat`](install_apk.bat)：Windows 批处理拖拽安装入口。
+* [`register_context_menu.reg`](register_context_menu.reg)：向 Windows 资源管理器添加“右键安装到 MuMu”上下文菜单。
+* [`unregister_context_menu.reg`](unregister_context_menu.reg)：移除 Windows 右键安装菜单。
+* [`hosts`](hosts)：内置去广告与遥测域名的 Android Hosts 屏蔽清单。
+* [`LICENSE`](LICENSE)：MIT 开源许可证。
+* [`.gitignore`](.gitignore)：排除安装包二进制文件（`*.apk`, `*.jar`, `*.key`）、本地备份及日志。
+
+---
+
+## 许可证 (License)
+
+本项目采用 [MIT License](LICENSE) 开源许可证。
