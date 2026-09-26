@@ -1,0 +1,36 @@
+# Android Application Packages & Archives
+*.apk
+*.xapk
+*.apks
+
+# Java Archives & Tools
+*.jar
+
+# Cryptographic Keys, Keystores, and Certificate Signatures
+# (Prevents GitHub Secret Scanning and Push Protection blocks)
+*.pk8
+*.p12
+*.key
+*.keystore
+*.jks
+*.rsa
+*.idsig
+
+# Runtime, Boot, and Logcat Traces
+*.log
+logcat_*.txt
+packages*.xml
+test_stat*
+
+# Local Backups and Scratch Directories
+backup/
+signed/
+build/
+dist/
+
+# OS and Editor Metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

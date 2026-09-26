@@ -1,0 +1,5 @@
+Windows Registry Editor Version 5.00
+
+; Remove "Install in MuMu Player" from Windows Explorer right-click context menu
+
+[-HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.apk\Shell\InstallInMuMu]

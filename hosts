@@ -1,0 +1,23 @@
+127.0.0.1       localhost
+::1             ip6-localhost
+
+# NetEase MuMu Telemetry & Ad Blocking
+0.0.0.0 sentry.netease.com
+0.0.0.0 zsos-api.ntes53.netease.com
+0.0.0.0 sigma-agentlog-a11xxna.proxima.nie.easebar.com
+0.0.0.0 fcount-api.webapp.easebar.com
+0.0.0.0 mumu-apk.fp.ps.netease.com
+0.0.0.0 active.mumu.163.com
+0.0.0.0 stat.nie.netease.com
+0.0.0.0 gvod.nie.netease.com
+0.0.0.0 adl.netease.com
+0.0.0.0 crash.nie.netease.com
+0.0.0.0 api.mumu.netease.com
+0.0.0.0 api-pro.mumu.163.com
+0.0.0.0 api.mumu.nie.netease.com
+0.0.0.0 event.sc.gearupportal.com
+0.0.0.0 oaid.wps.cn
+0.0.0.0 log.immomo.com
+0.0.0.0 track.tenjin.io
+0.0.0.0 adash.man.aliyuncs.com
+0.0.0.0 sensorsdata.analytics.netease.com

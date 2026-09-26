@@ -1,0 +1,12 @@
+Windows Registry Editor Version 5.00
+
+; Add "Install in MuMu Player" to Windows Explorer right-click context menu for .apk files
+; Writes to HKCU (No administrator rights required)
+; Replace <REPO_PATH> and <MUMU_DIR> with your actual directories if importing manually.
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.apk\Shell\InstallInMuMu]
+@="Install in MuMu Player (ADB)"
+"Icon"="\"C:\\Program Files\\Netease\\MuMu Player 12\\nx_main\\MuMuPlayer.exe\",0"
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.apk\Shell\InstallInMuMu\command]
+@="\"C:\\Path\\To\\install_apk.bat\" \"%1\""
