@@ -15,6 +15,14 @@ It is designed to be fully reproducible by any user or AI agent on another insta
 * **Storage Structure**: System partition mounted read-write via overlayfs (`/mnt/scratch/upperdir`).
 * **Root Solution**: Native KernelSU (`me.weishu.kernelsu`).
 
+### Script requirements and failure behavior
+
+Use Windows PowerShell 5.1 or PowerShell 7 and keep `mumu_common.ps1` beside the four entry-point scripts. Set `-MumuInstallDir` explicitly if your installation differs from the scripts' default `D:\Program Files\Netease\MuMu Player 12`. Every script validates the selected Android 15 VM, queries its assigned NAT port, and verifies ADB connectivity. Bridge mode uses only the configured adapter's neighbor table and bounded asynchronous .NET subnet probes (30 seconds); unresolved or ambiguous bridge targets are errors, never NAT fallbacks.
+
+Only the debloater may start a stopped VM, with a 75-second startup deadline. The installer and launcher scripts require a running instance. Privileged operations require verified root access. Necessary command failures stop subsequent steps and return exit `1`; earlier changes are not automatically rolled back. APK installation requires ADB exit `0` and a `Success` line. Cancelling its file picker returns `0`, and the batch wrapper preserves exit status and filenames with spaces, `&` and `!`.
+
+Install HeliBoard before debloating. The script must confirm, enable and select `helium314.keyboard/.latin.LatinIME` before package, hosts or Windows cleanup changes. If that fails, it leaves Sogou enabled and stops. It does not download a replacement keyboard.
+
 ### Locating the MuMu Installation Directory (`<MUMU_DIR>`)
 MuMu Player is typically installed at `C:\Program Files\Netease\MuMu Player 12\` by default, or at a custom drive/directory chosen during installation.
 
@@ -80,11 +88,17 @@ Configuring **Network Bridge Mode** binds the VM directly to your physical host 
 ## 3. Bloatware, Adware & Telemetry Neutralization
 
 ### A. Disable NetEase Adware & Telemetry Packages
-Inside Android 15, NetEase runs several background services that push game ads, record device telemetry, and consume background CPU cycles. Disable them cleanly via `pm disable-user --user 0`:
+Inside Android 15, NetEase runs several background services that push game ads, record device telemetry, and consume background CPU cycles. Install HeliBoard first (see section 5). The automated debloater enforces this prerequisite. For manual shell commands, verify the replacement before disabling any package:
 
 ```bash
 # Connect to ADB shell as root
 adb -s <VM_IP>:5555 shell
+
+# Stop before disabling packages if HeliBoard is missing or cannot be selected.
+ime list -a -s | grep -Fxq 'helium314.keyboard/.latin.LatinIME' || exit 1
+ime enable helium314.keyboard/.latin.LatinIME || exit 1
+ime set helium314.keyboard/.latin.LatinIME || exit 1
+[ "$(settings get secure default_input_method)" = 'helium314.keyboard/.latin.LatinIME' ] || exit 1
 
 # 1. Disable NetEase App Store (pushes ads and promotional carousels)
 pm disable-user --user 0 com.mumu.store
@@ -109,7 +123,7 @@ pm disable-user --user 0 com.android.chromium
 pm disable-user --user 0 com.android.camera2
 
 # 8. Uninstall leftover Google installer wizard
-pm uninstall com.nemu.googleinstaller
+pm uninstall -k --user 0 com.nemu.googleinstaller
 ```
 
 *(Note: If you use MuMu's multi-account cloner, keep `com.netease.mumu.cloner` intact).*
@@ -220,15 +234,21 @@ curl.exe -L -o "uber-apk-signer.jar" "https://github.com/patrickfav/uber-apk-sig
 java -jar "uber-apk-signer.jar" -a "Lawnchair.15.0.0.Beta.3.0.apk" --ks "platform.p12" --ksAlias platform --ksPass android --ksKeyPass android --allowResign -o "."
 ```
 
+Without `--overwrite`, the signer creates **`Lawnchair.15.0.0.Beta.3.0-aligned-signed.apk`** and leaves the input APK unchanged. Deploy that output. Do not accidentally deploy the original upstream-signed input. APKs, signer JARs and private keys remain local and ignored by Git.
+
 #### Step 4: Automated Deployment via KernelSU (`replace_lawnchair.ps1`)
-Rather than risking manual overlayfs writes, run the automated installer:
+Require Java on PATH and a local `uber-apk-signer.jar`. The installer verifies the APK's signature against the SHA-256 fingerprint of the tracked `platform.x509.pem` before connecting to MuMu. Missing verification tools or a certificate mismatch are fatal; it never signs automatically or falls back to the original APK. With the target instance running, deploy:
 ```powershell
-.\replace_lawnchair.ps1 -VmIndex 1
+.\replace_lawnchair.ps1 -VmIndex 1 -MumuInstallDir $mumuDir `
+    -SignedApkPath ".\Lawnchair.15.0.0.Beta.3.0-aligned-signed.apk" -SignerJarPath ".\uber-apk-signer.jar"
 ```
+
+The script first pulls and checksum-verifies a nonempty original backup at `backup/vm-<index>/Lawnchair_mumu_original.apk`. It uploads to a temporary device path, verifies SHA-256, deploys the module APK, verifies the live bind mount and its checksum, and only then writes the boot hook and restarts Android. It stops on any necessary failure, and never edits the raw scratch partition to repair legacy corruption. Preserve the per-instance backup. If a replacement is already mounted but no backup exists, restore the factory launcher before attempting a new backup.
 
 **How the KernelSU Hook Works Under the Hood**:
 1. Creates a KernelSU module directory:
    `/data/adb/modules/lawnchair/system/priv-app/Lawnchair/Lawnchair.apk`
+   The module includes `skip_mount` so KernelSU does not add a second automatic mount.
 2. Creates an early boot hook in `/data/adb/post-fs-data.d/00_lawnchair.sh`:
    ```bash
    #!/system/bin/sh
@@ -241,7 +261,7 @@ Rather than risking manual overlayfs writes, run the automated installer:
    ```
 
 #### Step 5: Verification
-Verify Lawnchair status and default launcher role via ADB:
+The scripts allow up to 90 seconds for Android and PackageManager readiness, then up to 30 seconds for a verified HOME role and running Lawnchair process. They return failure on timeout. For additional manual inspection:
 ```powershell
 # Check package version and privileges
 & $adb shell "dumpsys package app.lawnchair | grep -E 'versionName|flags|seinfo'"
@@ -255,9 +275,9 @@ Verify Lawnchair status and default launcher role via ADB:
 #### Step 6: Restoring Factory NetEase Lawnchair
 If you ever want to revert back to MuMu's stock launcher, run:
 ```powershell
-.\restore_lawnchair.ps1 -VmIndex 1
+.\restore_lawnchair.ps1 -VmIndex 1 -MumuInstallDir $mumuDir
 ```
-Because the base ROM image (`system.vdi` squashfs) was never modified, removing the KernelSU bind-mount instantly restores the factory launcher cleanly without any overlayfs whiteout risk.
+Restoration checks for an underlying factory APK or nonempty per-instance backup before teardown. It unmounts successfully before removing the module, verifies any restored backup bytes, and stops before cache clearing or restart if restoration fails. The old shared `backup/Lawnchair_mumu_original.apk` is accepted only for VM 1. Restoration clears Lawnchair settings and home-screen layout. Legacy scratch corruption is not repaired automatically; if a required recovery copy cannot be written, the script reports failure.
 
 ---
 
@@ -289,8 +309,8 @@ Install the following vetted open-source utilities to replace proprietary compon
 * **Installation & Activation**:
   ```powershell
   & $adb -s "<VM_IP>:5555" install -r "HeliBoard.apk"
-  & $adb -s "<VM_IP>:5555" shell "ime enable helium314.keyboard/.LatinIME"
-  & $adb -s "<VM_IP>:5555" shell "ime set helium314.keyboard/.LatinIME"
+  & $adb -s "<VM_IP>:5555" shell "ime enable helium314.keyboard/.latin.LatinIME"
+  & $adb -s "<VM_IP>:5555" shell "ime set helium314.keyboard/.latin.LatinIME"
   ```
 
 ---
@@ -309,4 +329,17 @@ When dropping images (such as 4K screenshots or wallpapers) into the Windows sha
   ```powershell
   & $adb -s "<VM_IP>:5555" shell "am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d 'file:///sdcard/Pictures/<filename.png>'"
   ```
-  Once the broadcast completes (`result=0`), the image is immediately accessible to Image 2 Wallpaper and all Android file pickers.
+   Once the broadcast completes (`result=0`), the image is immediately accessible to Image 2 Wallpaper and all Android file pickers.
+
+---
+
+## 7. Isolated Regression Checks
+
+These checks compile fake Windows CLI, ADB and Java processes using Windows PowerShell's bundled .NET Framework compiler. They need no additional testing framework and never connect to a real emulator. Run both supported hosts:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run.ps1
+pwsh.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run.ps1
+```
+
+The suite exercises queried NAT ports, bridge discovery, identity/connection errors, native stderr and timeouts, signature prerequisites, backup/upload/mount failures, safe restoration, Android/launcher timeouts, keyboard prerequisites, repeated debloating, and APK/batch argument and exit-code handling. Any live verification should use a disposable instance separately.

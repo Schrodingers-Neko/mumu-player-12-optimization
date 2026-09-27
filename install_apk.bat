@@ -1,7 +1,7 @@
 @echo off
 title MuMu Player 12 - High-Speed ADB Installer
-setlocal
-set APK_PATH=%~1
+setlocal DisableDelayedExpansion
+set "APK_PATH=%~1"
 
 where pwsh >nul 2>nul
 if %ERRORLEVEL% equ 0 (
@@ -11,9 +11,11 @@ if %ERRORLEVEL% equ 0 (
 )
 
 "%PS_CMD%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0install_apk.ps1" "%APK_PATH%"
-if %ERRORLEVEL% neq 0 (
+set "INSTALL_EXIT=%ERRORLEVEL%"
+if %INSTALL_EXIT% neq 0 (
     echo.
     echo An error occurred during installation.
 )
 echo.
 pause
+exit /b %INSTALL_EXIT%

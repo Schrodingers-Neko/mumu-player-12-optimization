@@ -15,6 +15,30 @@
 
 彻底解决替换桌面后开机卡在“正在启动手机...”的冷启动死循环问题。
 
+### 脚本前置条件与结果校验
+
+所有脚本兼容 Windows PowerShell 5.1 和 PowerShell 7。请将 `mumu_common.ps1` 与脚本放在同一目录；安装位置不是默认的 `D:\Program Files\Netease\MuMu Player 12` 时，请传入 `-MumuInstallDir`。`-VmIndex` 指定 Android 15 实例。脚本会检查实例身份及连接，不猜测 ADB 端口，也不会将网桥实例回退到 NAT。
+
+运行去广告脚本**之前**，请先安装 HeliBoard（`helium314.keyboard/.latin.LatinIME`）。脚本会先检查、启用并设为默认输入法，再停用软件包。如果激活失败，Sogou 保持启用，并停止软件包、hosts 和 Windows 清理操作。只有去广告脚本会自动启动尚未运行的实例，启动超过 75 秒即报错；安装 APK、替换或还原桌面前，请自行启动实例。需要特权的脚本还会校验 root 权限。
+
+替换桌面要求 PATH 中有 Java、本地存在 `uber-apk-signer.jar`，以及**已完成平台重签名**的 `Lawnchair.15.0.0.Beta.3.0-aligned-signed.apk`。请按照[优化指南](MUMU_OPTIMIZATION_GUIDE.md)下载并重签名。脚本会在连接模拟器之前，对照 `platform.x509.pem` 校验证书，不会自动重签名，也不会使用原始上游 APK 作为备用文件。
+
+```powershell
+.\replace_lawnchair.ps1 -VmIndex 1 -MumuInstallDir "C:\Program Files\Netease\MuMu Player 12" `
+    -SignedApkPath ".\Lawnchair.15.0.0.Beta.3.0-aligned-signed.apk" -SignerJarPath ".\uber-apk-signer.jar"
+.\mumu_debloater.ps1 -VmIndex 1 -MumuInstallDir "C:\Program Files\Netease\MuMu Player 12"
+.\restore_lawnchair.ps1 -VmIndex 1 -MumuInstallDir "C:\Program Files\Netease\MuMu Player 12"
+```
+
+原桌面按实例备份到 `backup/vm-<index>/Lawnchair_mumu_original.apk`；旧的共享备份仅允许用于实例 1 的还原。上传的 APK 和 hosts 文件都会校验哈希。还原脚本会在卸载之前确认原厂 APK 或备份可用，先解除挂载再移除模块，并在还原后清除桌面设置和布局。脚本不会自动修复旧的 scratch 分区损坏。桌面操作最多等待 90 秒确认 Android/PackageManager 就绪，再等待 30 秒确认 HOME 角色及桌面进程。任何必要步骤失败都会停止后续操作并返回退出码 `1`；已完成的步骤不会自动回滚。APK 安装同时要求 ADB 退出码为 `0` 且输出 `Success`。取消文件选择返回 `0`；批处理入口保留安装脚本的退出码，并支持含空格、`&` 和 `!` 的文件名。
+
+运行不接触真实模拟器、无需额外测试框架的隔离回归检查：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run.ps1
+pwsh.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run.ps1
+```
+
 ---
 
 ## 1. 运行环境与系统架构
@@ -57,11 +81,12 @@ MuMu 模拟器 12 自带功能完备的命令行工具：
 ### 动态 ADB 端口分配与网络模式 (NAT vs. 网桥)
 
 #### 模式 1：NAT 模式（默认）
-* **端口映射**：VirtualBox 在用户态创建本地端口转发规则（`127.0.0.1:16416` -> 虚拟机 `5555` 端口）。
+* **端口映射**：VirtualBox 在用户态创建本地端口转发规则（`127.0.0.1:<分配的端口>` -> 虚拟机 `5555` 端口）。请查询所选实例，`16416` 仅为示例。
 * **性能瓶颈**：由于依赖用户态 *Slirp* 软件套接字转发，存在极高的 CPU 上下文切换开销与较小的固定 TCP 窗口，网络吞吐量通常被限制在 **30–80 Mbps**。
 * **ADB 连接命令**：
   ```powershell
-  & "<MUMU_DIR>\nx_device\15.0\shell\adb.exe" connect 127.0.0.1:16416
+  $vmInfo = & "<MUMU_DIR>\nx_main\mumu-cli.exe" info -v 1 | ConvertFrom-Json
+  & "<MUMU_DIR>\nx_device\15.0\shell\adb.exe" connect "127.0.0.1:$($vmInfo.adb_port)"
   ```
 
 #### 模式 2：网桥直连模式（推荐：跑满千兆 1 Gbps）
@@ -83,8 +108,8 @@ MuMu 模拟器 12 自带功能完备的命令行工具：
 仓库中的 PowerShell 自动化脚本已集成双模式自适应逻辑：
 1. 自动解析 `customer_config.json` 检查 `network_bridge_opened` 是否开启。
 2. 自动读取 `vms\MuMuPlayer-15.0-<VM_INDEX>\macaddress` 提取目标 MAC 地址。
-3. 并行扫描本地局域网并查询 Windows ARP 邻居表（`Get-NetNeighbor`）自动获取虚拟机实时 IP。
-4. 若未开启网桥，则无缝回退至 NAT 本地端口 `127.0.0.1:$adb_port`。
+3. 根据 `network_current_bridge_card` 精确匹配 Windows 网卡，检查该网卡的邻居表，并用异步 .NET ping 探测其 IPv4 子网，最多 30 秒；兼容 PowerShell 5.1 和 7。
+4. NAT 模式仅使用 `mumu-cli info -v <index>` 返回的 `adb_port`。缺少端口、网卡或 MAC 匹配不唯一、网桥 IP 未找到均报错，不会从网桥回退到 NAT。四个脚本共用此逻辑。
 
 ---
 
@@ -230,9 +255,9 @@ MuMu 模拟器 12 自带功能完备的命令行工具：
 
 ### 自动化替换步骤
 
-运行仓库内的一键替换脚本即可自动完成全套适配：
+按照优化指南完成平台重签名后，再运行替换脚本。请使用签名工具生成的 `-aligned-signed.apk` 文件：
 ```powershell
-.\replace_lawnchair.ps1 -VmIndex 1
+.\replace_lawnchair.ps1 -VmIndex 1 -SignedApkPath ".\Lawnchair.15.0.0.Beta.3.0-aligned-signed.apk"
 ```
 
 **替换后的效果**：
@@ -263,8 +288,10 @@ MuMu 模拟器 12 自带功能完备的命令行工具：
 * [`README_EN.md`](README_EN.md)：English Documentation.
 * [`MUMU_OPTIMIZATION_GUIDE.md`](MUMU_OPTIMIZATION_GUIDE.md)：技术深度指南，完整记录从零重签名、底层排错到去广告的全部步骤。
 * [`replace_lawnchair.ps1`](replace_lawnchair.ps1)：全自动脚本，基于 KernelSU `post-fs-data.d` 挂载官方签名版 Lawnchair 15 Beta 3。
-* [`restore_lawnchair.ps1`](restore_lawnchair.ps1)：一键还原脚本，安全卸载 KernelSU 模块并清理缓存，无损恢复网易出厂自带桌面。
+* [`restore_lawnchair.ps1`](restore_lawnchair.ps1)：验证原厂 APK 或备份后解除挂载并移除模块，恢复出厂桌面；会清除桌面设置和布局。
 * [`mumu_debloater.ps1`](mumu_debloater.ps1)：一键去广告脚本，停用网易内置遥测、应用中心、加速器及宿主机扫描器。
+* [`mumu_common.ps1`](mumu_common.ps1)：共享的实例解析、外部命令检查、哈希/签名验证及输入法/桌面就绪检查。
+* [`tests/run.ps1`](tests/run.ps1)：使用假的 CLI、ADB 和 Java 进程，在两种 PowerShell 环境下运行隔离回归检查。
 * [`install_apk.ps1`](install_apk.ps1)：极速 ADB 应用安装脚本，支持图形化选择器与网桥智能路由。
 * [`install_apk.bat`](install_apk.bat)：Windows 批处理拖拽安装入口。
 * [`register_context_menu.reg`](register_context_menu.reg)：向 Windows 资源管理器添加“右键安装到 MuMu”上下文菜单。

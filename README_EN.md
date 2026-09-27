@@ -13,6 +13,30 @@
 
 This repository documents the architectural analysis, bloatware and adware catalog, network telemetry behaviors, and debloating procedures for **MuMu Player 12** running the **Android 15** engine.
 
+### Script prerequisites and verified results
+
+All scripts support Windows PowerShell 5.1 and PowerShell 7. Keep `mumu_common.ps1` beside them and pass `-MumuInstallDir` when MuMu is installed outside the scripts' default `D:\Program Files\Netease\MuMu Player 12`. `-VmIndex` selects the Android 15 instance. The scripts validate the VM identity and connection; they never guess an ADB port or switch a bridged instance to NAT.
+
+Install HeliBoard (`helium314.keyboard/.latin.LatinIME`) **before** running the debloater. It checks, enables and selects HeliBoard before disabling any package. If activation fails, Sogou stays enabled and package, hosts and Windows cleanup changes stop. Only the debloater automatically launches a stopped VM; it stops if startup exceeds 75 seconds. Start the instance yourself before installing an APK or replacing/restoring Lawnchair. Privileged scripts also verify root access.
+
+Launcher replacement requires Java on PATH, a local `uber-apk-signer.jar`, and the **already platform-signed** `Lawnchair.15.0.0.Beta.3.0-aligned-signed.apk`. Obtain and sign it using the [optimization guide](MUMU_OPTIMIZATION_GUIDE.md). The script verifies its certificate against `platform.x509.pem` before connecting. It never signs automatically or falls back to the upstream APK.
+
+```powershell
+.\replace_lawnchair.ps1 -VmIndex 1 -MumuInstallDir "C:\Program Files\Netease\MuMu Player 12" `
+    -SignedApkPath ".\Lawnchair.15.0.0.Beta.3.0-aligned-signed.apk" -SignerJarPath ".\uber-apk-signer.jar"
+.\mumu_debloater.ps1 -VmIndex 1 -MumuInstallDir "C:\Program Files\Netease\MuMu Player 12"
+.\restore_lawnchair.ps1 -VmIndex 1 -MumuInstallDir "C:\Program Files\Netease\MuMu Player 12"
+```
+
+Launcher backups are stored in `backup/vm-<index>/Lawnchair_mumu_original.apk`; restoration accepts the legacy shared backup only for VM 1. Uploaded APKs and hosts files are checksum-verified. Restoration verifies a factory APK or backup before teardown, unmounts before removing the module, and clears launcher settings/layout after restoration. These scripts do not automatically repair legacy scratch-partition corruption. Launcher success requires Android/PackageManager readiness within 90 seconds, followed by a verified HOME role and running process within 30 seconds. Failures stop subsequent steps and return exit `1`; earlier completed changes are not automatically rolled back. APK installation requires both ADB exit `0` and `Success` output. File-picker cancellation returns `0`; the batch wrapper preserves the installer exit code and filenames containing spaces, `&` and `!`.
+
+Run the isolated, dependency-free regression checks without touching a real emulator:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run.ps1
+pwsh.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run.ps1
+```
+
 ---
 
 ## 1. Environment & Architecture
@@ -55,11 +79,12 @@ MuMu Player 12 includes a command-line interface located at:
 ### Dynamic ADB Port Allocation & Network Modes (NAT vs. Bridge)
 
 #### Mode 1: NAT Mode (Default)
-* **Port Mapping**: VirtualBox creates a user-space NAT port forwarding rule (`127.0.0.1:16416` -> VM port `5555`).
+* **Port Mapping**: VirtualBox creates a user-space NAT port forwarding rule (`127.0.0.1:<allocated_port>` -> VM port `5555`). Query the selected instance; `16416` is only an example.
 * **Performance Impact**: Network throughput is bottlenecked (typically 30–80 Mbps) due to user-space *Slirp* software socket translations, high context switching overhead, and small fixed TCP window sizes.
 * **ADB Connection**:
   ```powershell
-  & "<MUMU_DIR>\nx_device\15.0\shell\adb.exe" connect 127.0.0.1:16416
+  $vmInfo = & "<MUMU_DIR>\nx_main\mumu-cli.exe" info -v 1 | ConvertFrom-Json
+  & "<MUMU_DIR>\nx_device\15.0\shell\adb.exe" connect "127.0.0.1:$($vmInfo.adb_port)"
   ```
 
 #### Mode 2: Network Bridge Mode (High Speed 1 Gbps)
@@ -77,12 +102,12 @@ MuMu Player 12 includes a command-line interface located at:
   ```
   *(Note: In Bridged mode, VirtualBox disables NAT port `127.0.0.1:16416`. Always connect directly to the VM's LAN IP).*
 
-#### Automated Dynamic Resolution in `mumu_debloater.ps1`
-The PowerShell script automatically handles both modes:
+#### Shared dynamic resolution in all scripts
+The scripts use `mumu_common.ps1` to resolve the selected VM:
 1. Reads `customer_config.json` to check if `network_bridge_opened` is enabled.
 2. Extracts the VM's hardware MAC address from `vms\MuMuPlayer-15.0-<VM_INDEX>\macaddress`.
-3. Resolves the active IP from Windows's ARP/neighbor cache (`Get-NetNeighbor`).
-4. If bridge mode is off or unresolved, it gracefully falls back to NAT `127.0.0.1:$adb_port`.
+3. Matches `network_current_bridge_card` to its Windows adapter, checks that adapter's neighbor cache, then probes its IPv4 subnets with asynchronous .NET pings for at most 30 seconds. This works in PowerShell 5.1 and 7.
+4. In NAT mode, uses only the `adb_port` returned by `mumu-cli info -v <index>`. Missing ports, ambiguous adapters/MAC matches and unresolved bridge connections are errors; there is no NAT fallback from bridge mode.
 
 ---
 
@@ -252,6 +277,8 @@ The following vetted open-source utilities are recommended to replace bare-bones
 * [`replace_lawnchair.ps1`](replace_lawnchair.ps1): Automated script that deploys official platform-signed Lawnchair 15 Beta 3 via KernelSU `post-fs-data.d` bind-mount.
 * [`restore_lawnchair.ps1`](restore_lawnchair.ps1): 1-click restore script that safely tears down the KernelSU hook and unmounts the launcher to restore factory NetEase Lawnchair.
 * [`mumu_debloater.ps1`](mumu_debloater.ps1): Automated script that disables NetEase tracking, promotional stores, ad engines, and host scanners.
+* [`mumu_common.ps1`](mumu_common.ps1): Shared VM resolution, checked native commands, checksum/signature verification, and keyboard/launcher readiness checks.
+* [`tests/run.ps1`](tests/run.ps1): Isolated regression checks using fake CLI, ADB and Java processes under both supported PowerShell hosts.
 * [`install_apk.ps1`](install_apk.ps1): High-speed ADB installer script with file picker dialog and automatic bridge/NAT routing.
 * [`install_apk.bat`](install_apk.bat): Windows batch wrapper for dragging and dropping APKs or double-click to install.
 * [`register_context_menu.reg`](register_context_menu.reg): Adds "Install in MuMu Player (ADB)" to Windows Explorer right-click menu for `.apk` files.
