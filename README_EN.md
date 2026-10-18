@@ -147,6 +147,17 @@ The scripts use `mumu_common.ps1` to resolve the selected VM:
      Stop-Service -Name "MuMuRemoteService" -Force
      Set-Service -Name "MuMuRemoteService" -StartupType Disabled
      ```
+4. **Desktop Floating Ad Banner (`MuMuNxService.exe`)**:
+   * Windows host process: `"<MUMU_DIR>\nx_main\MuMuNxService.exe"`.
+   * Automatically spawned by `MuMuNxMain.exe`. Periodically polls `api.mumu.nie.netease.com`, triggers embedded `aria2.exe` to download banner images into `%APPDATA%\Netease\MuMuPlayer\data\ProgramAds\advertisement\`, and draws a borderless topmost tool window (`NxServiceWindow`, `WS_EX_TOPMOST`) at the bottom-right corner of the desktop.
+   * *Mitigation*:
+     ```powershell
+     # Dismiss the banner immediately
+     Stop-Process -Name "MuMuNxService" -Force
+     # Lock advertisement directory against aria2 writes
+     icacls "$env:APPDATA\Netease\MuMuPlayer\data\ProgramAds\advertisement" /deny Everyone:(OI)(CI)(W,D)
+     ```
+   * Full reverse engineering details and protocol traces are documented in [DESKTOP_AD_BANNER_INVESTIGATION.md](DESKTOP_AD_BANNER_INVESTIGATION.md).
 
 ---
 

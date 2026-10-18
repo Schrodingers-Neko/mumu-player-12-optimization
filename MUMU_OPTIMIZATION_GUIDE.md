@@ -159,23 +159,35 @@ EOF
 ```
 
 ### C. Windows Host-Side Protections
-NetEase's Windows client downloads ad banners and scans running processes on the host. Neutralize these behaviors in PowerShell on Windows:
+NetEase's Windows client downloads ad banners, spawns floating desktop popups, and scans running processes on the host. Neutralize these behaviors in PowerShell on Windows:
 
 ```powershell
-# 1. Clear cached banner ads and lock folder permissions
+# 1. Immediately dismiss any active desktop ad banner and stop the background ad service
+Get-Process -Name "MuMuNxService" -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# 2. Clear cached banner ads and lock folder permissions against aria2 downloads
 $adDir = "$env:APPDATA\Netease\MuMuPlayer\data\ProgramAds"
 if (Test-Path $adDir) {
     Remove-Item -Recurse -Force "$adDir\*"
-    icacls $adDir /deny Everyone:(OI)(CI)(W,D)
+    if (-not (Test-Path "$adDir\advertisement")) { New-Item -ItemType Directory -Path "$adDir\advertisement" -Force | Out-Null }
+    icacls "$adDir\advertisement" /deny Everyone:(OI)(CI)(W,D)
 }
 
-# 2. Neutralize host process scanner configuration
+# 3. Neutralize host process scanner configuration
 $reportConfig = "$env:APPDATA\Netease\MuMuPlayer\configs\report_app_data_config.json"
 if (Test-Path $reportConfig) {
     Set-Content -Path $reportConfig -Value "{}"
     Set-ItemProperty -Path $reportConfig -Name IsReadOnly -Value $true
 }
+
+# 4. (Optional) Block host-side ad delivery endpoints in Windows hosts file
+# C:\Windows\System32\drivers\etc\hosts:
+# 0.0.0.0 api.mumu.nie.netease.com
+# 0.0.0.0 nemu.fp.ps.netease.com
 ```
+
+> [!NOTE]
+> For complete reverse-engineering details on how `MuMuNxService.exe` polls NetEase APIs, triggers `aria2.exe`, and constructs the topmost `NxServiceWindow` desktop banner, see [DESKTOP_AD_BANNER_INVESTIGATION.md](DESKTOP_AD_BANNER_INVESTIGATION.md).
 
 ---
 

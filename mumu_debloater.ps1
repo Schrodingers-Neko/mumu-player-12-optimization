@@ -57,6 +57,9 @@ try {
             Set-ItemProperty -LiteralPath $path -Name IsReadOnly -Value $true
         }
     }
+    Get-Process -Name 'MuMuNxService' -ErrorAction SilentlyContinue | ForEach-Object {
+        try { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue } catch {}
+    }
     Write-Host 'Debloating completed; keyboard, package state and blocklist verified.' -ForegroundColor Green
     exit 0
 } catch {

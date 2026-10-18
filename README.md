@@ -149,6 +149,18 @@ MuMu 模拟器 12 自带功能完备的命令行工具：
      Stop-Service -Name "MuMuRemoteService" -Force
      Set-Service -Name "MuMuRemoteService" -StartupType Disabled
      ```
+4. **桌面右下角弹窗横幅广告 (`MuMuNxService.exe`)**：
+   * 宿主机后台进程：`"<MUMU_DIR>\nx_main\MuMuNxService.exe"`。
+   * 由 `MuMuNxMain.exe` 静默调起，定时向 `api.mumu.nie.netease.com` 发送轮询请求拉取广告信息，并调用内置 `aria2.exe` 下载横幅图片到 `%APPDATA%\Netease\MuMuPlayer\data\ProgramAds\advertisement\`。
+   * 通过 Qt5 渲染置顶无边框工具窗口 (`NxServiceWindow`, `WS_EX_TOPMOST`) 常驻桌面右下角。
+   * *处置方案*：
+     ```powershell
+     # 立即关闭弹出的横幅
+     Stop-Process -Name "MuMuNxService" -Force
+     # 锁定广告缓存目录防止写入
+     icacls "$env:APPDATA\Netease\MuMuPlayer\data\ProgramAds\advertisement" /deny Everyone:(OI)(CI)(W,D)
+     ```
+   * 完整逆向工程细节与通信分析参见 [DESKTOP_AD_BANNER_INVESTIGATION.md](DESKTOP_AD_BANNER_INVESTIGATION.md)。
 
 ---
 
